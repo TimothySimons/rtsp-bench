@@ -102,22 +102,23 @@ func doSignaling(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	var err error
-	outboundVideoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-		MimeType: "video/h264",
-	}, "pion-rtsp", "pion-rtsp")
-	if err != nil {
-		panic(err)
-	}
+	Decode()
+	// var err error
+	// outboundVideoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+	// 	MimeType: "video/h264",
+	// }, "pion-rtsp", "pion-rtsp")
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	go rtspConsumer()
-	go reportBuilder()
+	// go rtspConsumer()
+	// go reportBuilder()
 
-	http.Handle("/", http.FileServer(http.Dir("./static")))
-	http.HandleFunc("/doSignaling", doSignaling)
+	// http.Handle("/", http.FileServer(http.Dir("./static")))
+	// http.HandleFunc("/doSignaling", doSignaling)
 
-	fmt.Println("Open http://localhost:8080 to access this demo")
-	panic(http.ListenAndServe(":8080", nil))
+	// fmt.Println("Open http://localhost:8080 to access this demo")
+	// panic(http.ListenAndServe(":8080", nil))
 }
 
 // The RTSP URL that will be streamed
