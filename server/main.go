@@ -10,9 +10,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v4"
+	"github.com/bluenviron/gortsplib/v4/pkg/base"
+	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
 	"github.com/deepch/vdk/av"
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/format/rtsp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/shirou/gopsutil/cpu"
@@ -102,27 +107,28 @@ func doSignaling(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	Decode()
-	// var err error
-	// outboundVideoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-	// 	MimeType: "video/h264",
-	// }, "pion-rtsp", "pion-rtsp")
-	// if err != nil {
-	// 	panic(err)
-	// }
+	// Decode()
+	var err error
+	outboundVideoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+		MimeType: "video/h264",
+	}, "pion-rtsp", "pion-rtsp")
+	if err != nil {
+		panic(err)
+	}
 
-	// go rtspConsumer()
-	// go reportBuilder()
+	go rtspConsumer2()
+	go reportBuilder()
 
-	// http.Handle("/", http.FileServer(http.Dir("./static")))
-	// http.HandleFunc("/doSignaling", doSignaling)
+	http.Handle("/", http.FileServer(http.Dir("./static")))
+	http.HandleFunc("/doSignaling", doSignaling)
 
-	// fmt.Println("Open http://localhost:8080 to access this demo")
-	// panic(http.ListenAndServe(":8080", nil))
+	fmt.Println("Open http://localhost:8080 to access this demo")
+	panic(http.ListenAndServe(":8080", nil))
 }
 
 // The RTSP URL that will be streamed
-const rtspURL = "rtsp://170.93.143.139:1935/rtplive/0b01b57900060075004d823633235daa"
+// const rtspURL = "rtsp://onvifuser:onvifpassword1@10.3.0.10/Streaming/Channels/101?channel=1&profile=Profile_1&subtype=0&transportmode=unicast"
+const rtspURL = "rtsp://10.0.0.104:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif"
 
 // Connect to an RTSP URL and pull media.
 // Convert H264 to Annex-B, then write to outboundVideoTrack which sends to all PeerConnections
@@ -186,4 +192,90 @@ func rtspConsumer() {
 
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func rtspConsumer2() {
+	c := gortsplib.Client{}
+
+	u, err := base.ParseURL(rtspURL)
+	if err != nil {
+		panic(err)
+	}
+
+	err = c.Start(u.Scheme, u.Host)
+	if err != nil {
+		panic(err)
+	}
+	defer c.Close()
+
+	desc, _, err := c.Describe(u)
+	if err != nil {
+		panic(err)
+	}
+
+	var forma *format.H264
+	medi := desc.FindFormat(&forma)
+	if medi == nil {
+		panic("media not found")
+	}
+
+	rtpDec, err := forma.CreateDecoder()
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = c.Setup(desc.BaseURL, medi, 0, 0)
+	if err != nil {
+		panic(err)
+	}
+
+	var bufferDuration time.Duration
+	var previousTimestamp uint32
+	var clockRate = 90000
+
+	c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
+		// pts, ok := c.PacketPTS2(medi, pkt)
+		// if !ok {
+		// 	log.Printf("Waiting for timestamp")
+		// 	return
+		// }
+
+		// Calculate duration using the difference between successive RTP timestamps
+		// Decode timestamp
+		// pts, ok := c.PacketPTS2(medi, pkt)
+		// if !ok {
+		// 	log.Printf("Waiting for timestamp")
+		// 	return
+		// }
+
+		// Extract access units from RTP packets
+		nalUnits, err := rtpDec.Decode(pkt)
+		if err != nil {
+			if err != rtph264.ErrNonStartingPacketAndNoPrevious && err != rtph264.ErrMorePacketsNeeded {
+				log.Printf("Error decoding RTP packet: %v", err)
+			}
+			return
+		}
+
+		if previousTimestamp != 0 {
+			delta := pkt.Timestamp - previousTimestamp
+			bufferDuration = time.Duration(float64(delta) / float64(clockRate) * float64(time.Second))
+		}
+		previousTimestamp = pkt.Timestamp
+
+		au := convertToAnnexB(nalUnits, forma.SPS, forma.PPS)
+		if err = outboundVideoTrack.WriteSample(media.Sample{Data: au, Duration: bufferDuration}); err != nil && err != io.ErrClosedPipe {
+			panic(err)
+		}
+
+	})
+
+	// start playing
+	_, err = c.Play(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	// wait until a fatal error
+	panic(c.Wait())
 }
