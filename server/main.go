@@ -14,6 +14,7 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/base"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
 	"github.com/deepch/vdk/av"
 	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/format/rtsp"
@@ -168,6 +169,15 @@ func rtspConsumer() {
 				continue
 			}
 
+			// if len(pkt.Data) > 64 {
+			// 	PrintBytes(pkt.Data, 64)
+			// 	fmt.Println("...")
+			// 	fmt.Println()
+			// } else {
+			// 	PrintBytes(pkt.Data, len(pkt.Data))
+			// 	fmt.Println()
+			// }
+
 			pkt.Data = pkt.Data[4:]
 
 			// For every key-frame pre-pend the SPS and PPS
@@ -229,26 +239,8 @@ func rtspConsumer2() {
 		panic(err)
 	}
 
-	var bufferDuration time.Duration
-	var previousTimestamp uint32
-	var clockRate = 90000
-
+	previousTimestamp := uint32(0)
 	c.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
-		// pts, ok := c.PacketPTS2(medi, pkt)
-		// if !ok {
-		// 	log.Printf("Waiting for timestamp")
-		// 	return
-		// }
-
-		// Calculate duration using the difference between successive RTP timestamps
-		// Decode timestamp
-		// pts, ok := c.PacketPTS2(medi, pkt)
-		// if !ok {
-		// 	log.Printf("Waiting for timestamp")
-		// 	return
-		// }
-
-		// Extract access units from RTP packets
 		nalUnits, err := rtpDec.Decode(pkt)
 		if err != nil {
 			if err != rtph264.ErrNonStartingPacketAndNoPrevious && err != rtph264.ErrMorePacketsNeeded {
@@ -257,25 +249,70 @@ func rtspConsumer2() {
 			return
 		}
 
-		if previousTimestamp != 0 {
-			delta := pkt.Timestamp - previousTimestamp
-			bufferDuration = time.Duration(float64(delta) / float64(clockRate) * float64(time.Second))
-		}
+		au := convertToAnnexB(nalUnits, forma.SPS, forma.PPS)
+
+		// for _, nalu := range nalUnits {
+		// 	fmt.Printf("NAL Unit type octet: %08b (%02X)\n", nalu[0], nalu[0])
+		// 	nalUnitType := h264.NALUType(nalu[0] & 0x1F)
+		// 	fmt.Printf("NAL Unit Type: %s\n", nalUnitType.String())
+		// 	if len(nalu) > 64 {
+		// 		PrintBytes(au, 64)
+		// 		fmt.Println("...")
+		// 		fmt.Println()
+		// 	} else {
+		// 		PrintBytes(nalu, len(nalu))
+		// 		fmt.Println()
+		// 	}
+		// }
+
+		bufferDuration := time.Duration((float64(pkt.Timestamp-previousTimestamp) / 90000.0) * float64(time.Second))
 		previousTimestamp = pkt.Timestamp
 
-		au := convertToAnnexB(nalUnits, forma.SPS, forma.PPS)
-		if err = outboundVideoTrack.WriteSample(media.Sample{Data: au, Duration: bufferDuration}); err != nil && err != io.ErrClosedPipe {
+		if err = outboundVideoTrack.WriteSample(media.Sample{Data: au, Duration: time.Duration(bufferDuration)}); err != nil && err != io.ErrClosedPipe {
 			panic(err)
 		}
-
 	})
 
-	// start playing
 	_, err = c.Play(nil)
 	if err != nil {
 		panic(err)
 	}
 
-	// wait until a fatal error
 	panic(c.Wait())
+}
+
+// Convert AU to Annex B format, with SPS and PPS before IDR frames
+func convertToAnnexB(nalUnits [][]byte, sps []byte, pps []byte) []byte {
+	annexbNALUStartCode := []byte{0x00, 0x00, 0x00, 0x01}
+
+	annexBBuffer := make([]byte, 0)
+	for _, nalu := range nalUnits {
+		nalUnitType := h264.NALUType(nalu[0] & 0x1F)
+		if nalUnitType == h264.NALUTypeIDR {
+			annexBBuffer = append(annexBBuffer, annexbNALUStartCode...)
+			annexBBuffer = append(annexBBuffer, sps...)
+			annexBBuffer = append(annexBBuffer, annexbNALUStartCode...)
+			annexBBuffer = append(annexBBuffer, pps...)
+		}
+		annexBBuffer = append(annexBBuffer, annexbNALUStartCode...)
+		annexBBuffer = append(annexBBuffer, nalu...)
+	}
+
+	return annexBBuffer
+}
+
+func PrintBytes(data []byte, length int) {
+	startAddress := uintptr(0x1000)
+	bytesPerLine := 16
+	for i := 0; i < length; i += bytesPerLine {
+		fmt.Printf("0x%04X | ", startAddress+uintptr(i))
+
+		for j := 0; j < bytesPerLine; j++ {
+			if i+j < len(data) {
+				fmt.Printf("%02X ", data[i+j])
+			}
+		}
+
+		fmt.Println()
+	}
 }
